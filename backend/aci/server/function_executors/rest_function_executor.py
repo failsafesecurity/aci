@@ -1,5 +1,7 @@
+import ipaddress
 from abc import abstractmethod
 from typing import Any, Generic, override
+from urllib.parse import urlparse
 
 import httpx
 from httpx import HTTPStatusError
@@ -51,6 +53,7 @@ class RestFunctionExecutor(FunctionExecutor[TScheme, TCred], Generic[TScheme, TC
         protocol_data = RestMetadata.model_validate(function.protocol_data)
         # Construct URL with path parameters
         url = f"{protocol_data.server_url}{protocol_data.path}"
+        self._validate_url(url)
         if path:
             # Replace path parameters in URL
             for path_param_name, path_param_value in path.items():
@@ -80,6 +83,29 @@ class RestFunctionExecutor(FunctionExecutor[TScheme, TCred], Generic[TScheme, TC
         )
 
         return self._send_request(request)
+
+    @staticmethod
+    def _validate_url(url: str) -> None:
+        """Validate URL to prevent SSRF attacks.
+        Blocks private IPs, loopback addresses, and cloud metadata endpoints.
+        """
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Invalid URL scheme for function execution: {parsed.scheme}")
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("Invalid URL: hostname cannot be determined")
+        blocked_hostnames = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+        if hostname.lower() in blocked_hostnames:
+            raise ValueError("Access to localhost/loopback addresses is not allowed")
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback:
+                raise ValueError("Access to private/internal IP addresses is not allowed")
+            if str(ip) in ("169.254.169.254", "169.254.169.253", "168.63.129.16"):
+                raise ValueError("Access to cloud metadata endpoints is not allowed")
+        except ValueError:
+            pass  # hostname, not IP
 
     def _send_request(self, request: httpx.Request) -> FunctionExecutionResult:
         # TODO: one client for all requests? cache the client? concurrency control? async client?
