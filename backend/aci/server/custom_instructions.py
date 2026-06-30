@@ -84,9 +84,14 @@ def check_for_violation(
             temperature=temperature,
         )
     except Exception as e:
-        # for inference failure, we should let the request pass
+        # Fail-closed: if we cannot verify compliance, reject the request
+        # This prevents security guard bypass during OpenAI outages or rate limits
         logger.exception(
-            f"Failed inference for violation check, letting the request pass, error={e}"
+            f"Failed inference for violation check, rejecting request for safety, error={e}"
+        )
+        raise CustomInstructionViolation(
+            f"Cannot verify custom instruction compliance for {function.name}: "
+            f"inference check failed. Request rejected for safety."
         )
 
     result = response.choices[0].message.parsed
