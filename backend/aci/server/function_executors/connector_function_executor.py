@@ -51,6 +51,16 @@ class ConnectorFunctionExecutor(FunctionExecutor[TScheme, TCred], Generic[TSchem
             f"class_name={class_name}, method_name={method_name}"
         )
 
+        # Validate module_name to prevent arbitrary imports
+        if not module_name.startswith("aci.server.app_connectors.") or ".." in module_name:
+            logger.error(
+                f"Invalid module_name rejected, module_name={module_name}, "
+                f"function_name={function.name}"
+            )
+            raise NoImplementationFound(
+                f"module_name '{module_name}' is not a valid app connector module"
+            )
+
         app_connector_class = self._get_app_connector_class(module_name, class_name)
         logger.info(f"Got app connector class, app_connector_class={app_connector_class}")
         # TODO: caching? singleton per app per enduser account? executing in a thread pool?
