@@ -52,6 +52,12 @@ async def handle_chat(
         StreamingResponse: Streamed chat completion responses
     """
 
+    # Sanitize user input: wrap user messages in delimiter tags to prevent
+    # prompt injection from being interpreted as system instructions.
+    for msg in agent_chat.messages:
+        if msg.role == "user" and isinstance(msg.content, str):
+            msg.content = f"<user_input>{msg.content}</user_input>"
+
     openai_messages = convert_to_openai_messages(agent_chat.messages)
     # TODO: support different meta function mode.
     selected_functions = await get_functions_definitions(

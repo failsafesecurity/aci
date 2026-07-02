@@ -52,7 +52,10 @@ class AgentSecretsManager(AppConnectorBase):
                 decrypted_value = encryption.decrypt(secret.value)
                 secret_value = SecretValue.model_validate_json(decrypted_value.decode())
 
-                result.append(DomainCredential(domain=secret.key, **secret_value.model_dump()))
+                # Mask passwords in response to prevent credential exfiltration
+                masked_data = secret_value.model_dump()
+                masked_data["password"] = "***masked***"
+                result.append(DomainCredential(domain=secret.key, **masked_data))
 
             return result
 
@@ -81,12 +84,15 @@ class AgentSecretsManager(AppConnectorBase):
             decrypted_value = encryption.decrypt(secret.value)
             secret_value = SecretValue.model_validate_json(decrypted_value.decode())
 
+            # Mask password in response to prevent credential exfiltration
+            masked_data = secret_value.model_dump()
+            masked_data["password"] = "***masked***"
             return DomainCredential(
                 domain=domain,
-                **secret_value.model_dump(),
+                **masked_data,
             )
 
-    def create_credential_for_domain(self, domain: str, username: str, password: str) -> None:
+    def create_credential_for_domain(self, domain: str, username: str, password: str, *, _confirmed: bool = False) -> None:
         """
         Creates a new credential for a specific domain.
 
@@ -110,6 +116,11 @@ class AgentSecretsManager(AppConnectorBase):
                     message=f"Credential for domain '{domain}' already exists"
                 )
 
+            if not _confirmed:
+                raise AgentSecretsManagerError(
+                    message="Destructive operation requires confirmation. Pass _confirmed=True."
+                )
+
             # Check quota before creating new secret
             quota_manager.enforce_agent_secrets_quota(db_session, self.linked_account.project_id)
 
@@ -123,7 +134,7 @@ class AgentSecretsManager(AppConnectorBase):
             crud.secret.create_secret(db_session, self.linked_account.id, secret_create)
             db_session.commit()
 
-    def update_credential_for_domain(self, domain: str, username: str, password: str) -> None:
+    def update_credential_for_domain(self, domain: str, username: str, password: str, *, _confirmed: bool = False) -> None:
         """
         Updates an existing credential for a specific domain.
 
@@ -138,6 +149,11 @@ class AgentSecretsManager(AppConnectorBase):
             KeyError: If no credential exists for the specified domain.
         """
         with create_db_session(config.DB_FULL_URL) as db_session:
+            if not _confirmed:
+                raise AgentSecretsManagerError(
+                    message="Destructive operation requires confirmation. Pass _confirmed=True."
+                )
+
             secret = crud.secret.get_secret(db_session, self.linked_account.id, domain)
             if not secret:
                 raise AgentSecretsManagerError(
@@ -153,7 +169,7 @@ class AgentSecretsManager(AppConnectorBase):
             crud.secret.update_secret(db_session, secret, secret_update)
             db_session.commit()
 
-    def delete_credential_for_domain(self, domain: str) -> None:
+    def delete_credential_for_domain(self, domain: str, *, _confirmed: bool = False) -> None:
         """
         Deletes a credential for a specific domain.
 
@@ -166,6 +182,11 @@ class AgentSecretsManager(AppConnectorBase):
             KeyError: If no credential exists for the specified domain.
         """
         with create_db_session(config.DB_FULL_URL) as db_session:
+            if not _confirmed:
+                raise AgentSecretsManagerError(
+                    message="Destructive operation requires confirmation. Pass _confirmed=True."
+                )
+
             secret = crud.secret.get_secret(db_session, self.linked_account.id, domain)
             if not secret:
                 raise AgentSecretsManagerError(
