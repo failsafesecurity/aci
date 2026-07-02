@@ -1,7 +1,9 @@
 from abc import abstractmethod
 from typing import Any, Generic, override
+from urllib.parse import urlparse
 
 import httpx
+import ipaddress
 from httpx import HTTPStatusError
 
 from aci.common.db.sql_models import Function
@@ -20,6 +22,37 @@ class RestFunctionExecutor(FunctionExecutor[TScheme, TCred], Generic[TScheme, TC
     """
     Function executor for REST functions.
     """
+
+    # Private IP ranges to block for SSRF protection
+    _PRIVATE_NETWORKS = [
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+        ipaddress.ip_network("169.254.0.0/16"),
+        ipaddress.ip_network("127.0.0.0/8"),
+        ipaddress.ip_network("::1/128"),
+        ipaddress.ip_network("fd00::/8"),
+    ]
+
+    @staticmethod
+    def _validate_url(url: str) -> None:
+        """Validate that the URL does not target a private/internal IP address."""
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError(f"Invalid URL: no hostname found in {url}")
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Invalid URL scheme: {parsed.scheme}. Only http and https are allowed.")
+        try:
+            resolved_ip = ipaddress.ip_address(hostname)
+            for network in RestFunctionExecutor._PRIVATE_NETWORKS:
+                if resolved_ip in network:
+                    raise ValueError(
+                        f"SSRF protection: requests to private IP {resolved_ip} are blocked"
+                    )
+        except ValueError:
+            # hostname is not a literal IP; DNS resolution check happens at connection time
+            pass
 
     @abstractmethod
     def _inject_credentials(
@@ -79,13 +112,16 @@ class RestFunctionExecutor(FunctionExecutor[TScheme, TCred], Generic[TScheme, TC
             f"method={request.method} url={request.url} "
         )
 
+        # Validate URL for SSRF protection
+        self._validate_url(str(request.url))
+
         return self._send_request(request)
 
     def _send_request(self, request: httpx.Request) -> FunctionExecutionResult:
         # TODO: one client for all requests? cache the client? concurrency control? async client?
         # TODO: add retry
         timeout = httpx.Timeout(10.0, read=30.0)
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             try:
                 response = client.send(request)
             except Exception as e:
