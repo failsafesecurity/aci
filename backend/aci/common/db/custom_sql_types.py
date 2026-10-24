@@ -26,6 +26,92 @@ def _decrypt_value(value: str) -> str:
     return encryption.decrypt(encrypted_bytes).decode("utf-8")
 
 
+def _encrypt_credentials(creds: dict) -> dict:
+    """Encrypt sensitive fields in a flat credentials dict."""
+    encrypted_value = copy.deepcopy(creds)  # Avoid modifying the original dict
+
+    # TODO: if we add a new field or rename a field in the future,
+    # we need to update the _decrypt_credentials function to handle the new field
+
+    # APIKeySchemeCredentials
+    if "secret_key" in encrypted_value:
+        secret_key = encrypted_value["secret_key"]
+        if isinstance(secret_key, str):
+            encrypted_value["secret_key"] = _encrypt_value(secret_key)
+
+    # OAuth2SchemeCredentials
+    elif "access_token" in encrypted_value:
+        client_secret = encrypted_value.get("client_secret")
+        if isinstance(client_secret, str):
+            encrypted_value["client_secret"] = _encrypt_value(client_secret)
+
+        access_token = encrypted_value.get("access_token")
+        if isinstance(access_token, str):
+            encrypted_value["access_token"] = _encrypt_value(access_token)
+
+        refresh_token = encrypted_value.get("refresh_token")
+        if isinstance(refresh_token, str):
+            encrypted_value["refresh_token"] = _encrypt_value(refresh_token)
+
+        raw_token_response = encrypted_value.get("raw_token_response")
+        if isinstance(raw_token_response, dict):
+            raw_token_response_str = json.dumps(raw_token_response)
+            encrypted_value["raw_token_response"] = _encrypt_value(raw_token_response_str)
+
+    # NoAuthSchemeCredentials (empty dict) - do nothing
+
+    return encrypted_value
+
+
+def _decrypt_credentials(creds: dict) -> dict:
+    """Decrypt sensitive fields in a flat credentials dict."""
+    decrypted_value = copy.deepcopy(creds)  # Avoid modifying the original dict
+
+    # APIKeySchemeCredentials
+    if "secret_key" in decrypted_value:
+        secret_key_b64 = decrypted_value["secret_key"]
+        if isinstance(secret_key_b64, str):
+            decrypted_value["secret_key"] = _decrypt_value(secret_key_b64)
+
+    # OAuth2SchemeCredentials
+    elif "access_token" in decrypted_value:
+        client_secret_b64 = decrypted_value.get("client_secret")
+        if isinstance(client_secret_b64, str):
+            decrypted_value["client_secret"] = _decrypt_value(client_secret_b64)
+
+        access_token_b64 = decrypted_value.get("access_token")
+        if isinstance(access_token_b64, str):
+            decrypted_value["access_token"] = _decrypt_value(access_token_b64)
+
+        refresh_token_b64 = decrypted_value.get("refresh_token")
+        if isinstance(refresh_token_b64, str):
+            decrypted_value["refresh_token"] = _decrypt_value(refresh_token_b64)
+
+        raw_token_response_b64 = decrypted_value.get("raw_token_response")
+        if isinstance(raw_token_response_b64, str):
+            decrypted_str = _decrypt_value(raw_token_response_b64)
+            decrypted_value["raw_token_response"] = json.loads(decrypted_str)
+
+    # NoAuthSchemeCredentials (empty dict) - do nothing
+
+    return decrypted_value
+
+
+def _is_nested_by_scheme(value: dict) -> bool:
+    """Check whether the dict is nested by security scheme type.
+
+    ``apps.default_security_credentials_by_scheme`` stores credentials as
+    ``{scheme_type: credentials_dict, ...}`` whereas per-app credentials are
+    a flat dict.  We detect the nested form by checking that every top-level
+    key is a known ``SecurityScheme`` value and every top-level value is a
+    dict.
+    """
+    if not value:
+        return False
+    scheme_values = {scheme.value for scheme in SecurityScheme}
+    return all(key in scheme_values and isinstance(v, dict) for key, v in value.items())
+
+
 class Key(TypeDecorator[str]):
     impl = LargeBinary
     cache_ok = True
@@ -92,32 +178,17 @@ class EncryptedSecurityCredentials(TypeDecorator[dict]):
             # TODO: if we add a new field or rename a field in the future,
             # we need to update the process_result_value method to handle the new field
 
-            # APIKeySchemeCredentials
-            if "secret_key" in encrypted_value:
-                secret_key = encrypted_value["secret_key"]
-                if isinstance(secret_key, str):
-                    encrypted_value["secret_key"] = _encrypt_value(secret_key)
-
-            # OAuth2SchemeCredentials
-            elif "access_token" in encrypted_value:
-                client_secret = encrypted_value.get("client_secret")
-                if isinstance(client_secret, str):
-                    encrypted_value["client_secret"] = _encrypt_value(client_secret)
-
-                access_token = encrypted_value.get("access_token")
-                if isinstance(access_token, str):
-                    encrypted_value["access_token"] = _encrypt_value(access_token)
-
-                refresh_token = encrypted_value.get("refresh_token")
-                if isinstance(refresh_token, str):
-                    encrypted_value["refresh_token"] = _encrypt_value(refresh_token)
-
-                raw_token_response = encrypted_value.get("raw_token_response")
-                if isinstance(raw_token_response, dict):
-                    raw_token_response_str = json.dumps(raw_token_response)
-                    encrypted_value["raw_token_response"] = _encrypt_value(raw_token_response_str)
-
-            # NoAuthSchemeCredentials (empty dict) - do nothing
+            # apps.default_security_credentials_by_scheme stores credentials
+            # nested by security scheme (top-level key is the scheme type, e.g.
+            # "api_key"/"oauth2").  Detect this structure and encrypt each
+            # nested credential dict individually so that shared/default
+            # credentials are not silently persisted in plaintext.
+            if _is_nested_by_scheme(encrypted_value):
+                for scheme_type, scheme_credentials in encrypted_value.items():
+                    if isinstance(scheme_credentials, dict):
+                        encrypted_value[scheme_type] = _encrypt_credentials(scheme_credentials)
+            else:
+                encrypted_value = _encrypt_credentials(encrypted_value)
 
             return encrypted_value
         return None
@@ -126,32 +197,12 @@ class EncryptedSecurityCredentials(TypeDecorator[dict]):
         if value is not None:
             decrypted_value = copy.deepcopy(value)  # Avoid modifying the original dict
 
-            # APIKeySchemeCredentials
-            if "secret_key" in decrypted_value:
-                secret_key_b64 = decrypted_value["secret_key"]
-                if isinstance(secret_key_b64, str):
-                    decrypted_value["secret_key"] = _decrypt_value(secret_key_b64)
-
-            # OAuth2SchemeCredentials
-            elif "access_token" in decrypted_value:
-                client_secret_b64 = decrypted_value.get("client_secret")
-                if isinstance(client_secret_b64, str):
-                    decrypted_value["client_secret"] = _decrypt_value(client_secret_b64)
-
-                access_token_b64 = decrypted_value.get("access_token")
-                if isinstance(access_token_b64, str):
-                    decrypted_value["access_token"] = _decrypt_value(access_token_b64)
-
-                refresh_token_b64 = decrypted_value.get("refresh_token")
-                if isinstance(refresh_token_b64, str):
-                    decrypted_value["refresh_token"] = _decrypt_value(refresh_token_b64)
-
-                raw_token_response_b64 = decrypted_value.get("raw_token_response")
-                if isinstance(raw_token_response_b64, str):
-                    decrypted_str = _decrypt_value(raw_token_response_b64)
-                    decrypted_value["raw_token_response"] = json.loads(decrypted_str)
-
-            # NoAuthSchemeCredentials (empty dict) - do nothing
+            if _is_nested_by_scheme(decrypted_value):
+                for scheme_type, scheme_credentials in decrypted_value.items():
+                    if isinstance(scheme_credentials, dict):
+                        decrypted_value[scheme_type] = _decrypt_credentials(scheme_credentials)
+            else:
+                decrypted_value = _decrypt_credentials(decrypted_value)
 
             return decrypted_value
         return None
