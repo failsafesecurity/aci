@@ -81,9 +81,6 @@ class InterceptorMiddleware(BaseHTTPMiddleware):
                 "user_agent": request.headers.get("User-Agent", "unknown"),
                 "x_forwarded_proto": request.headers.get("X-Forwarded-Proto", "unknown"),
             }
-            request_body = await self._get_request_body(request)
-            if request_body:
-                request_log_data["request_body"] = request_body
             logger.info("Received request", extra=request_log_data)
 
         try:
